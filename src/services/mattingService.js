@@ -1,4 +1,5 @@
 import { API_CONFIG, API_STATUS } from '../config/api.js'
+import { Request } from '../utils/request.js'
 
 /**
  * 抠图服务类
@@ -6,74 +7,14 @@ import { API_CONFIG, API_STATUS } from '../config/api.js'
 export class MattingService {
 
   /**
-   * 同步抠图API
+   * 同步抠图API (已弃用，仅作错误提示)
    * @param {String} filePath 图片文件路径
    * @param {Object} options 抠图选项
    * @returns {Promise<String>} 返回处理后的图片URL
    */
   static async removeBackgroundSync(filePath, options = {}) {
-    const apiKey = API_CONFIG.KOUKOUTU.API_KEY
-
-    if (apiKey === 'YOUR_API_KEY_HERE') {
-      throw new Error('请先配置API Key')
-    }
-
-    const url = API_CONFIG.KOUKOUTU.BASE_URL + API_CONFIG.KOUKOUTU.ENDPOINTS.SYNC_CREATE
-
-    const defaultOptions = {
-      output_format: 'webp',
-      crop: '0',
-      border: '0',
-      response: 'url'
-    }
-
-    const finalOptions = { ...defaultOptions, ...options }
-
-    return new Promise((resolve, reject) => {
-      uni.showLoading({
-        title: '正在处理中...',
-        mask: true
-      })
-
-      uni.uploadFile({
-        url: url,
-        filePath: filePath,
-        name: 'image_file',
-        header: {
-          'X-API-Key': apiKey
-        },
-        formData: {
-          'model_key': 'background-removal',
-          ...finalOptions
-        },
-        success: (uploadFileRes) => {
-          console.log('抠图上传成功:', uploadFileRes)
-
-          if (uploadFileRes.statusCode === API_STATUS.SUCCESS) {
-            try {
-              const dataAll = JSON.parse(uploadFileRes.data)
-              const data = dataAll.data
-              if (data.result_file) {
-                resolve(data.result_file)
-              } else {
-                reject(new Error(data.error || '抠图处理失败'))
-              }
-            } catch (e) {
-              reject(new Error('解析响应数据失败'))
-            }
-          } else {
-            reject(new Error(`请求失败: ${uploadFileRes.statusCode}`))
-          }
-        },
-        fail: (err) => {
-          console.error('抠图上传失败:', err)
-          reject(new Error('网络请求失败，请检查网络连接'))
-        },
-        complete: () => {
-          uni.hideLoading()
-        }
-      })
-    })
+    // 不再调用同步接口，直接返回错误提示
+    throw new Error('服务暂时不可用，请稍后再试')
   }
 
   /**
@@ -100,41 +41,30 @@ export class MattingService {
 
     const finalOptions = { ...defaultOptions, ...options }
 
-    return new Promise((resolve, reject) => {
-      uni.uploadFile({
-        url: url,
-        filePath: filePath,
-        name: 'image_file',
-        header: {
-          'X-API-Key': apiKey
-        },
-        formData: {
-          'model_key': 'background-removal',
-          ...finalOptions
-        },
-        success: (uploadFileRes) => {
-          if (uploadFileRes.statusCode === API_STATUS.SUCCESS) {
-            try {
-              const dataAll = JSON.parse(uploadFileRes.data)
-              const data = dataAll.data
-              if (data.task_id) {
-                resolve(data.task_id)
-              } else {
-                reject(new Error(data.error || '创建任务失败'))
-              }
-            } catch (e) {
-              reject(new Error('解析响应数据失败'))
-            }
-          } else {
-            reject(new Error(`请求失败: ${uploadFileRes.statusCode}`))
-          }
-        },
-        fail: (err) => {
-          console.error('异步抠图任务创建失败:', err)
-          reject(new Error('网络请求失败，请检查网络连接'))
-        }
-      })
-    })
+    const uploadOptions = {
+      url: url,
+      filePath: filePath,
+      name: 'image_file',
+      header: {
+        'X-API-Key': apiKey
+      },
+      formData: {
+        'model_key': 'background-removal',
+        ...finalOptions
+      }
+    };
+
+    try {
+      const result = await Request.uploadFile(uploadOptions);
+      if (result.task_id) {
+        return result.task_id;
+      } else {
+        throw new Error(result.error || '创建任务失败');
+      }
+    } catch (error) {
+      console.error('异步抠图任务创建失败:', error);
+      throw error;
+    }
   }
 
   /**
@@ -144,27 +74,25 @@ export class MattingService {
    */
   static async queryAsyncResult(taskId) {
     const apiKey = API_CONFIG.KOUKOUTU.API_KEY
-    const url = `${API_CONFIG.KOUKOUTU.ASYNC_BASE_URL}${API_CONFIG.KOUKOUTU.ENDPOINTS.ASYNC_QUERY}?task_id=${taskId}`
+    const url = `${API_CONFIG.KOUKOUTU.ASYNC_BASE_URL}${API_CONFIG.KOUKOUTU.ENDPOINTS.ASYNC_QUERY}`
 
-    return new Promise((resolve, reject) => {
-      uni.request({
-        url: url,
-        method: 'GET',
-        header: {
-          'X-API-Key': apiKey
-        },
-        success: (res) => {
-          if (res.statusCode === API_STATUS.SUCCESS) {
-            resolve(res.data)
-          } else {
-            reject(new Error(`查询失败: ${res.statusCode}`))
-          }
-        },
-        fail: (err) => {
-          reject(new Error('网络请求失败'))
-        }
-      })
-    })
+    const requestOptions = {
+      url: url,
+      header: {
+        'X-API-Key': apiKey,
+        'Content-Type': 'application/json'
+      },
+      data: {
+        task_id: taskId
+      }
+    };
+
+    try {
+      const result = await Request.post(requestOptions);
+      return result;
+    } catch (error) {
+      throw error;
+    }
   }
 
   /**
@@ -195,17 +123,19 @@ export class MattingService {
           }
 
           const result = await this.queryAsyncResult(taskId)
+          console.log('🚀 ~ MattingService ~ poll ~ result:', result)
+          console.log('🚀 ~ MattingService ~ poll ~ +result.state:', +result.state)
 
           // 重置连续错误计数
           consecutiveErrors = 0
 
-          if (result.status === API_STATUS.COMPLETED) {
+          if (+result.state === API_STATUS.COMPLETED && result.result_file) {
             console.log('异步任务完成，结果:', result.result_file)
             resolve(result.result_file)
-          } else if (result.status === API_STATUS.FAILED) {
+          } else if (result.state === API_STATUS.FAILED) {
             console.error('异步任务失败:', result.error)
             reject(new Error(result.error || '服务器处理失败'))
-          } else if (result.status === API_STATUS.PROCESSING) {
+          } else if (result.state === API_STATUS.PROCESSING) {
             if (attempts >= maxAttempts) {
               reject(new Error('处理超时，请稍后再试或使用同步模式'))
             } else {
@@ -214,7 +144,7 @@ export class MattingService {
             }
           } else {
             // 未知状态，继续轮询
-            console.warn('未知任务状态:', result.status)
+            console.warn('未知任务状态:', result.state)
             if (attempts >= maxAttempts) {
               reject(new Error('任务状态异常，请稍后再试'))
             } else {

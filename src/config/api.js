@@ -18,7 +18,7 @@ export const API_CONFIG = {
 export const API_STATUS = {
   SUCCESS: 200,
   PROCESSING: 'processing',
-  COMPLETED: 'completed',
+  COMPLETED: 1,
   FAILED: 'failed'
 }
 

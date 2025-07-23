@@ -194,7 +194,7 @@ export default {
     },
     
     /**
-     * 开始抠图处理 - 优先使用异步API
+     * 开始抠图处理 - 只使用异步API
      */
     async startMatting() {
       if (!this.originalImagePath) {
@@ -213,7 +213,7 @@ export default {
           mask: true
         })
         
-        // 优先调用异步API创建任务
+        // 调用异步API创建任务
         const taskId = await MattingService.removeBackgroundAsync(this.originalImagePath, {
           output_format: 'webp',
           response: 'url'
@@ -239,39 +239,10 @@ export default {
           icon: 'success'
         })
       } catch (error) {
-        console.error('异步抠图失败:', error)
-        
-        // 如果异步API失败，回退到同步API
-        console.log('异步API失败，尝试同步API...')
-        try {
-          uni.showLoading({
-            title: '正在使用同步方式处理...',
-            mask: true
-          })
-          
-          // 重置进度
-          this.processingProgress = 0
-          this.simulateProgress()
-          
-          const mattedImageUrl = await MattingService.removeBackgroundSync(this.originalImagePath, {
-            output_format: 'webp',
-            response: 'url'
-          })
-          
-          this.mattedImage = mattedImageUrl
-          this.processingProgress = 100
-          
-          uni.showToast({
-            title: '抠图完成（同步模式）',
-            icon: 'success'
-          })
-        } catch (syncError) {
-          console.error('同步抠图也失败:', syncError)
-          this.showError(syncError.message || '抠图处理失败，请稍后再试')
-          this.currentStep = 1
-        } finally {
-          uni.hideLoading()
-        }
+        console.error('抠图失败:', error)
+        // 只提示错误，不再回退到同步API
+        this.showError(error.message || '抠图处理失败，请稍后再试')
+        this.currentStep = 1
       } finally {
         this.isProcessing = false
         uni.hideLoading()
@@ -400,6 +371,8 @@ export default {
   justify-content: center;
   margin-bottom: 60rpx;
   padding: 0 40rpx;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .step {
@@ -408,6 +381,7 @@ export default {
   align-items: center;
   flex: 1;
   max-width: 120rpx;
+  box-sizing: border-box;
 }
 
 .step-icon {
@@ -459,6 +433,8 @@ export default {
 /* 上传区域 */
 .upload-section {
   margin-bottom: 40rpx;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .upload-area {
@@ -471,6 +447,8 @@ export default {
   transition: all 0.3s ease;
   position: relative;
   overflow: hidden;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .upload-area:active {
@@ -514,10 +492,13 @@ export default {
   display: flex;
   gap: 24rpx;
   margin-top: 32rpx;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .upload-actions .btn {
   flex: 1;
+  box-sizing: border-box;
 }
 
 /* 处理中 */
@@ -646,11 +627,14 @@ export default {
   display: flex;
   align-items: center;
   gap: 20rpx;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .image-item {
   flex: 1;
   text-align: center;
+  box-sizing: border-box;
 }
 
 .result-image {
@@ -688,10 +672,13 @@ export default {
   gap: 24rpx;
   padding: 32rpx;
   border-top: 1rpx solid var(--border-color);
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .result-footer .btn {
   flex: 1;
+  box-sizing: border-box;
 }
 
 /* 错误提示 */

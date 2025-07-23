@@ -322,8 +322,10 @@ export default {
       try {
         this.backgroundImageInfo = await ImageUtils.getImageInfo(this.backgroundImage)
         this.updateCanvasSize()
+        console.log('背景图信息加载成功:', this.backgroundImageInfo)
       } catch (error) {
         console.error('获取背景图信息失败:', error)
+        this.backgroundImageInfo = null
       }
     },
     
@@ -333,8 +335,10 @@ export default {
     async onMattedImageLoad() {
       try {
         this.mattedImageInfo = await ImageUtils.getImageInfo(this.mattedImage)
+        console.log('抠图信息加载成功:', this.mattedImageInfo)
       } catch (error) {
         console.error('获取抠图信息失败:', error)
+        this.mattedImageInfo = null
       }
     },
     
@@ -471,6 +475,10 @@ export default {
     async previewResult() {
       try {
         uni.showLoading({ title: '正在生成预览...' })
+        
+        // 确保图片信息已加载
+        await this.ensureImageInfoLoaded()
+        
         const tempFilePath = await this.generateComposedImage()
         
         uni.previewImage({
@@ -478,8 +486,17 @@ export default {
           current: tempFilePath
         })
       } catch (error) {
+        console.error('预览错误:', error)
+        let errorMessage = '预览失败'
+        
+        if (error.message.includes('图片信息不完整')) {
+          errorMessage = '图片还在加载中，请稍后再试'
+        } else if (error.message.includes('图片加载失败')) {
+          errorMessage = '图片加载失败，请重新选择图片'
+        }
+        
         uni.showToast({
-          title: '预览失败',
+          title: errorMessage,
           icon: 'error'
         })
       } finally {
@@ -498,17 +515,36 @@ export default {
       try {
         uni.showLoading({ title: '正在合成图片...' })
         
+        // 检查图片是否准备就绪
+        if (!this.backgroundImage || !this.mattedImage) {
+          throw new Error('请确保已选择背景图片和抠图图片')
+        }
+        
+        // 确保图片信息已加载
+        await this.ensureImageInfoLoaded()
+        
         const tempFilePath = await this.generateComposedImage()
         
         // 保存到相册
         await ImageUtils.saveImageToPhotosAlbum(tempFilePath)
         
       } catch (error) {
-        uni.showToast({
-          title: '导出失败',
-          icon: 'error'
-        })
         console.error('导出错误:', error)
+        let errorMessage = '导出失败'
+        
+        if (error.message.includes('图片信息不完整')) {
+          errorMessage = '图片还在加载中，请稍后再试'
+        } else if (error.message.includes('请确保已选择')) {
+          errorMessage = error.message
+        } else if (error.message.includes('图片加载失败')) {
+          errorMessage = '图片加载失败，请重新选择图片'
+        }
+        
+        uni.showToast({
+          title: errorMessage,
+          icon: 'error',
+          duration: 3000
+        })
       } finally {
         this.isExporting = false
         uni.hideLoading()
@@ -516,32 +552,98 @@ export default {
     },
     
     /**
+     * 确保图片信息已加载
+     */
+    async ensureImageInfoLoaded() {
+      const maxRetries = 3
+      let retries = 0
+      
+      while (retries < maxRetries) {
+        // 检查背景图信息
+        if (!this.backgroundImageInfo && this.backgroundImage) {
+          try {
+            console.log('重新获取背景图信息...')
+            this.backgroundImageInfo = await ImageUtils.getImageInfo(this.backgroundImage)
+          } catch (error) {
+            console.error('重新获取背景图信息失败:', error)
+          }
+        }
+        
+        // 检查抠图信息
+        if (!this.mattedImageInfo && this.mattedImage) {
+          try {
+            console.log('重新获取抠图信息...')
+            this.mattedImageInfo = await ImageUtils.getImageInfo(this.mattedImage)
+          } catch (error) {
+            console.error('重新获取抠图信息失败:', error)
+          }
+        }
+        
+        // 如果都有了就退出
+        if (this.backgroundImageInfo && this.mattedImageInfo) {
+          console.log('图片信息获取完成')
+          return
+        }
+        
+        retries++
+        if (retries < maxRetries) {
+          console.log(`第${retries}次重试获取图片信息...`)
+          await new Promise(resolve => setTimeout(resolve, 1000)) // 等待1秒
+        }
+      }
+      
+      // 最终检查
+      if (!this.backgroundImageInfo) {
+        throw new Error('背景图片信息获取失败，请重新选择背景图片')
+      }
+      if (!this.mattedImageInfo) {
+        throw new Error('抠图信息获取失败，请返回重新进行抠图')
+      }
+    },
+    
+    /**
      * 生成合成图片
      */
     async generateComposedImage() {
+      // 再次确认图片信息存在
       if (!this.backgroundImageInfo || !this.mattedImageInfo) {
         throw new Error('图片信息不完整')
       }
       
-      // 预加载图片
-      const backgroundImg = await CanvasUtils.preloadImage(this.backgroundImage)
-      const mattedImg = await CanvasUtils.preloadImage(this.mattedImage)
-      
-      // 计算前景图在画布中的实际尺寸和位置
-      const foregroundConfig = this.calculateForegroundConfig()
-      
-      // 使用Canvas合成
-      const composedImagePath = await CanvasUtils.composeImages({
-        canvasId: 'composeCanvas',
-        component: this,
-        backgroundImage: backgroundImg,
-        foregroundImage: mattedImg,
-        canvasWidth: this.canvasSize.width,
-        canvasHeight: this.canvasSize.height,
-        foregroundConfig: foregroundConfig
-      })
-      
-      return composedImagePath
+      try {
+        // 预加载图片
+        console.log('开始预加载图片...')
+        const backgroundImg = await CanvasUtils.preloadImage(this.backgroundImage)
+        const mattedImg = await CanvasUtils.preloadImage(this.mattedImage)
+        console.log('图片预加载完成')
+        
+        // 计算前景图在画布中的实际尺寸和位置
+        const foregroundConfig = await this.calculateForegroundConfig()
+        console.log('前景图配置:', foregroundConfig)
+        
+        // 使用Canvas合成
+        const composedImagePath = await CanvasUtils.composeImages({
+          canvasId: 'composeCanvas',
+          component: this,
+          backgroundImage: backgroundImg,
+          foregroundImage: mattedImg,
+          canvasWidth: this.canvasSize.width,
+          canvasHeight: this.canvasSize.height,
+          foregroundConfig: foregroundConfig
+        })
+        
+        console.log('图片合成完成:', composedImagePath)
+        return composedImagePath
+      } catch (error) {
+        console.error('图片合成过程中出错:', error)
+        if (error.message.includes('图片加载失败')) {
+          throw new Error('图片加载失败，请检查图片是否存在')
+        } else if (error.message.includes('图片合成失败')) {
+          throw new Error('图片合成失败，请重试')
+        } else {
+          throw error
+        }
+      }
     },
     
     /**
@@ -604,11 +706,10 @@ export default {
 
 .tool-btn {
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  width: 100rpx;
-  height: 80rpx;
+  gap: 10rpx;
+  padding: 10rpx 20rpx;
   background-color: var(--bg-tertiary);
   border: 1rpx solid var(--border-color);
   border-radius: var(--radius-md);
@@ -623,11 +724,10 @@ export default {
 
 .tool-icon {
   font-size: 32rpx;
-  margin-bottom: 8rpx;
 }
 
 .tool-text {
-  font-size: 20rpx;
+  font-size: 32rpx;
 }
 
 /* 画布区域 */
@@ -635,6 +735,8 @@ export default {
   flex: 1;
   position: relative;
   overflow: hidden;
+  padding: 32rpx;
+  box-sizing: border-box;
 }
 
 .background-upload {
@@ -644,7 +746,6 @@ export default {
   align-items: center;
   justify-content: center;
   border: 3rpx dashed var(--border-color);
-  margin: 32rpx;
   border-radius: var(--radius-lg);
 }
 
@@ -759,7 +860,7 @@ export default {
 
 .control-row {
   display: flex;
-  gap: 24rpx;
+  gap: 48rpx;
 }
 
 .control-item {
@@ -780,6 +881,7 @@ export default {
 
 .control-slider {
   width: 100%;
+  margin:0;
 }
 
 /* 底部操作栏 */
@@ -794,10 +896,9 @@ export default {
 .action-btn {
   flex: 1;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  height: 120rpx;
+  gap:10rpx;
   border-radius: var(--radius-lg);
   font-size: 24rpx;
   font-weight: 500;
@@ -827,7 +928,6 @@ export default {
 
 .btn-icon {
   font-size: 36rpx;
-  margin-bottom: 8rpx;
 }
 
 .action-btn:disabled {
