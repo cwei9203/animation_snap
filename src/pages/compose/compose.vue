@@ -37,7 +37,7 @@
         <image 
           :src="backgroundImage" 
           class="background-layer"
-          mode="aspectFill"
+          mode="aspectFit"
           @load="onBackgroundLoad"
         />
         
@@ -198,8 +198,8 @@ export default {
       
       // 画布配置
       canvasSize: {
-        width: 750,
-        height: 1000
+        width: 896,  // 16:9 横屏比例，基于896x504
+        height: 504
       },
       
       // 其他状态
@@ -240,9 +240,11 @@ export default {
     // 获取传入参数
     if (options.mattedImage) {
       this.mattedImage = decodeURIComponent(options.mattedImage)
+      console.log('接收到的抠图路径:', this.mattedImage)
     }
     if (options.originalImage) {
       this.originalImage = decodeURIComponent(options.originalImage)
+      console.log('接收到的原图路径:', this.originalImage)
     }
     
     // 初始化提示
@@ -348,15 +350,29 @@ export default {
     updateCanvasSize() {
       if (this.backgroundImageInfo) {
         const { width, height } = this.backgroundImageInfo
-        const maxSize = 1000
+        const targetAspectRatio = 16 / 9  // 16:9 横屏比例
+        const maxSize = 1200
+        
+        // 计算适合16:9比例的canvas尺寸
+        let canvasWidth, canvasHeight
         
         if (width > height) {
-          this.canvasSize.width = Math.min(width, maxSize)
-          this.canvasSize.height = Math.min(height, maxSize * height / width)
+          // 横向图片
+          canvasWidth = Math.min(width, maxSize)
+          canvasHeight = canvasWidth / targetAspectRatio
         } else {
-          this.canvasSize.height = Math.min(height, maxSize)
-          this.canvasSize.width = Math.min(width, maxSize * width / height)
+          // 纵向图片，按高度适配
+          canvasHeight = Math.min(height, maxSize / targetAspectRatio)
+          canvasWidth = canvasHeight * targetAspectRatio
         }
+        
+        // 确保canvas尺寸不超过背景图片尺寸，且保持16:9比例
+        const scaleFactor = Math.min(maxSize / canvasWidth, (maxSize / targetAspectRatio) / canvasHeight)
+        
+        this.canvasSize.width = Math.floor(canvasWidth * scaleFactor)
+        this.canvasSize.height = Math.floor(canvasHeight * scaleFactor)
+        
+        console.log('更新Canvas尺寸:', this.canvasSize, '背景图片尺寸:', { width, height })
       }
     },
     
@@ -476,27 +492,43 @@ export default {
       try {
         uni.showLoading({ title: '正在生成预览...' })
         
-        // 确保图片信息已加载
-        await this.ensureImageInfoLoaded()
+        // 验证图片路径
+        if (!this.backgroundImage || !this.mattedImage) {
+          throw new Error('请确保已选择背景图片和抠图图片')
+        }
         
         const tempFilePath = await this.generateComposedImage()
+        
+        // 显示预览和调试信息
+        const foregroundConfig = await this.calculateForegroundConfig()
+        
+        console.log('预览调试信息:', {
+          Canvas尺寸: this.canvasSize,
+          背景图信息: this.backgroundImageInfo,
+          前景图配置: foregroundConfig,
+          导出文件: tempFilePath
+        })
         
         uni.previewImage({
           urls: [tempFilePath],
           current: tempFilePath
         })
-      } catch (error) {
-        console.error('预览错误:', error)
-        let errorMessage = '预览失败'
         
-        if (error.message.includes('图片信息不完整')) {
-          errorMessage = '图片还在加载中，请稍后再试'
-        } else if (error.message.includes('图片加载失败')) {
-          errorMessage = '图片加载失败，请重新选择图片'
+        // 可选：显示一些调试信息给用户
+        if (this.transform.scale !== 1 || this.transform.x !== 0 || this.transform.y !== 0 || this.transform.opacity !== 1) {
+          setTimeout(() => {
+            uni.showToast({
+              title: `缩放:${this.transform.scale.toFixed(1)}x 透明度:${Math.round(this.transform.opacity * 100)}%`,
+              icon: 'none',
+              duration: 2000
+            })
+          }, 1000)
         }
         
+      } catch (error) {
+        console.error('预览错误:', error)
         uni.showToast({
-          title: errorMessage,
+          title: error.message || '预览失败',
           icon: 'error'
         })
       } finally {
@@ -520,8 +552,8 @@ export default {
           throw new Error('请确保已选择背景图片和抠图图片')
         }
         
-        // 确保图片信息已加载
-        await this.ensureImageInfoLoaded()
+        // 验证图片路径有效性
+        await this.validateImagePaths()
         
         const tempFilePath = await this.generateComposedImage()
         
@@ -532,18 +564,21 @@ export default {
         console.error('导出错误:', error)
         let errorMessage = '导出失败'
         
-        if (error.message.includes('图片信息不完整')) {
-          errorMessage = '图片还在加载中，请稍后再试'
+        if (error.message.includes('抠图文件已失效')) {
+          errorMessage = '抠图文件已失效，请返回重新抠图'
+        } else if (error.message.includes('背景图片')) {
+          errorMessage = '背景图片已失效，请重新选择'
         } else if (error.message.includes('请确保已选择')) {
           errorMessage = error.message
-        } else if (error.message.includes('图片加载失败')) {
-          errorMessage = '图片加载失败，请重新选择图片'
+        } else if (error.message.includes('图片路径无效')) {
+          errorMessage = '图片文件已失效，请重新操作'
         }
         
-        uni.showToast({
-          title: errorMessage,
-          icon: 'error',
-          duration: 3000
+        uni.showModal({
+          title: '导出失败',
+          content: errorMessage,
+          showCancel: false,
+          confirmText: '知道了'
         })
       } finally {
         this.isExporting = false
@@ -552,125 +587,231 @@ export default {
     },
     
     /**
-     * 确保图片信息已加载
+     * 验证图片路径
      */
-    async ensureImageInfoLoaded() {
-      const maxRetries = 3
-      let retries = 0
-      
-      while (retries < maxRetries) {
-        // 检查背景图信息
-        if (!this.backgroundImageInfo && this.backgroundImage) {
-          try {
-            console.log('重新获取背景图信息...')
-            this.backgroundImageInfo = await ImageUtils.getImageInfo(this.backgroundImage)
-          } catch (error) {
-            console.error('重新获取背景图信息失败:', error)
+    async validateImagePaths() {
+      try {
+        // 验证背景图片
+        if (this.backgroundImage) {
+          const isBackgroundValid = await ImageUtils.validateImagePath(this.backgroundImage)
+          if (!isBackgroundValid) {
+            throw new Error('背景图片路径无效，请重新选择背景图片')
           }
         }
         
-        // 检查抠图信息
-        if (!this.mattedImageInfo && this.mattedImage) {
-          try {
-            console.log('重新获取抠图信息...')
-            this.mattedImageInfo = await ImageUtils.getImageInfo(this.mattedImage)
-          } catch (error) {
-            console.error('重新获取抠图信息失败:', error)
+        // 验证抠图文件
+        if (this.mattedImage) {
+          const isMattedValid = await ImageUtils.validateImagePath(this.mattedImage)
+          if (!isMattedValid) {
+            // 如果是网络URL，尝试重新下载
+            if (ImageUtils.isNetworkUrl(this.mattedImage)) {
+              try {
+                console.log('检测到抠图文件失效，尝试重新下载:', this.mattedImage)
+                uni.showLoading({ title: '正在重新下载抠图...' })
+                
+                // 下载图片到本地临时文件
+                const localPath = await ImageUtils.downloadImage(this.mattedImage)
+                
+                // 更新抠图路径为本地路径
+                this.mattedImage = localPath
+                console.log('抠图重新下载成功，本地路径:', localPath)
+                
+                uni.hideLoading()
+                uni.showToast({
+                  title: '抠图文件已更新',
+                  icon: 'success',
+                  duration: 1000
+                })
+              } catch (downloadError) {
+                uni.hideLoading()
+                console.error('重新下载抠图失败:', downloadError)
+                throw new Error(`抠图文件已失效且下载失败，请返回重新抠图`)
+              }
+            } else {
+              throw new Error('抠图文件已失效，请返回重新进行抠图操作')
+            }
           }
         }
-        
-        // 如果都有了就退出
-        if (this.backgroundImageInfo && this.mattedImageInfo) {
-          console.log('图片信息获取完成')
-          return
-        }
-        
-        retries++
-        if (retries < maxRetries) {
-          console.log(`第${retries}次重试获取图片信息...`)
-          await new Promise(resolve => setTimeout(resolve, 1000)) // 等待1秒
-        }
-      }
-      
-      // 最终检查
-      if (!this.backgroundImageInfo) {
-        throw new Error('背景图片信息获取失败，请重新选择背景图片')
-      }
-      if (!this.mattedImageInfo) {
-        throw new Error('抠图信息获取失败，请返回重新进行抠图')
+      } catch (error) {
+        console.error('验证图片路径失败:', error)
+        throw error
       }
     },
-    
+
     /**
      * 生成合成图片
      */
     async generateComposedImage() {
-      // 再次确认图片信息存在
-      if (!this.backgroundImageInfo || !this.mattedImageInfo) {
-        throw new Error('图片信息不完整')
-      }
-      
       try {
-        // 预加载图片
-        console.log('开始预加载图片...')
-        const backgroundImg = await CanvasUtils.preloadImage(this.backgroundImage)
-        const mattedImg = await CanvasUtils.preloadImage(this.mattedImage)
-        console.log('图片预加载完成')
+        console.log('=== 开始生成合成图片 ===')
+        console.log('背景图路径:', this.backgroundImage)
+        console.log('抠图路径:', this.mattedImage)
+        console.log('背景图信息:', this.backgroundImageInfo)
+        console.log('抠图信息:', this.mattedImageInfo)
+        console.log('Canvas尺寸:', this.canvasSize)
+        
+        // 验证Canvas尺寸
+        if (!this.canvasSize.width || !this.canvasSize.height || this.canvasSize.width <= 0 || this.canvasSize.height <= 0) {
+          console.error('❌ Canvas尺寸无效:', this.canvasSize)
+          throw new Error('Canvas尺寸设置无效')
+        }
+        
+        // 验证图片路径的有效性
+        if (!this.backgroundImage) {
+          throw new Error('背景图路径为空')
+        }
+        if (!this.mattedImage) {
+          throw new Error('抠图路径为空')
+        }
+        
+        // 验证图片文件是否存在和有效
+        try {
+          console.log('验证背景图路径...')
+          const bgValid = await ImageUtils.validateImagePath(this.backgroundImage)
+          if (!bgValid) {
+            throw new Error('背景图路径无效')
+          }
+          console.log('✅ 背景图路径验证通过')
+          
+          console.log('验证抠图路径...')
+          const fgValid = await ImageUtils.validateImagePath(this.mattedImage)
+          if (!fgValid) {
+            throw new Error('抠图路径无效')
+          }
+          console.log('✅ 抠图路径验证通过')
+        } catch (validationError) {
+          console.error('❌ 图片路径验证失败:', validationError)
+          throw validationError
+        }
+        
+        // 等待DOM渲染完成
+        await this.$nextTick()
+        
+        // 验证Canvas元素是否存在
+        try {
+          const query = uni.createSelectorQuery().in(this)
+          const canvasExists = await new Promise((resolve) => {
+            query.select('.hidden-canvas').boundingClientRect((rect) => {
+              console.log('Canvas查询结果:', rect)
+              resolve(!!rect)
+            }).exec()
+          })
+          
+          if (!canvasExists) {
+            console.error('❌ Canvas元素不存在')
+            throw new Error('Canvas元素未找到')
+          }
+          console.log('✅ Canvas元素验证通过')
+        } catch (canvasError) {
+          console.error('❌ Canvas验证失败:', canvasError)
+          throw new Error('Canvas元素验证失败')
+        }
         
         // 计算前景图在画布中的实际尺寸和位置
+        console.log('计算前景图配置...')
         const foregroundConfig = await this.calculateForegroundConfig()
-        console.log('前景图配置:', foregroundConfig)
+        console.log('✅ 前景图配置计算完成:', foregroundConfig)
         
-        // 使用Canvas合成
+        // 验证前景图配置的合理性
+        if (!foregroundConfig || typeof foregroundConfig.width !== 'number' || foregroundConfig.width <= 0) {
+          console.error('❌ 前景图配置无效:', foregroundConfig)
+          throw new Error('前景图配置计算失败')
+        }
+        
+        // 使用Canvas合成 - 传入背景图信息以正确适配
+        console.log('开始Canvas合成...')
         const composedImagePath = await CanvasUtils.composeImages({
           canvasId: 'composeCanvas',
           component: this,
-          backgroundImage: backgroundImg,
-          foregroundImage: mattedImg,
+          backgroundImagePath: this.backgroundImage,
+          foregroundImagePath: this.mattedImageInfo.path || this.mattedImage,
           canvasWidth: this.canvasSize.width,
           canvasHeight: this.canvasSize.height,
-          foregroundConfig: foregroundConfig
+          foregroundConfig: foregroundConfig,
+          backgroundImageInfo: this.backgroundImageInfo  // 传入背景图信息
         })
         
-        console.log('图片合成完成:', composedImagePath)
+        console.log('🎉 图片合成完成:', composedImagePath)
+        console.log('=== 合成图片生成结束 ===')
         return composedImagePath
       } catch (error) {
-        console.error('图片合成过程中出错:', error)
-        if (error.message.includes('图片加载失败')) {
-          throw new Error('图片加载失败，请检查图片是否存在')
-        } else if (error.message.includes('图片合成失败')) {
-          throw new Error('图片合成失败，请重试')
-        } else {
-          throw error
-        }
+        console.error('❌ 图片合成过程中出错:', error)
+        throw new Error('图片合成失败: ' + error.message)
       }
     },
     
     /**
      * 计算前景图配置
      */
-    calculateForegroundConfig() {
-      // 获取页面尺寸信息
+    async calculateForegroundConfig() {
+      // 获取界面显示区域的实际尺寸
       const query = uni.createSelectorQuery().in(this)
       
-      return new Promise((resolve) => {
-        query.select('.edit-canvas').boundingClientRect((rect) => {
-          const viewWidth = rect.width
-          const viewHeight = rect.height
+      return new Promise((resolve, reject) => {
+        query.select('.edit-canvas').boundingClientRect((canvasRect) => {
+          if (!canvasRect) {
+            console.error('❌ 无法获取canvas区域信息')
+            reject(new Error('无法获取canvas区域信息'))
+            return
+          }
           
-          // 计算缩放比例
-          const scaleX = this.canvasSize.width / viewWidth
-          const scaleY = this.canvasSize.height / viewHeight
+          // 界面显示区域的尺寸
+          const viewWidth = canvasRect.width
+          const viewHeight = canvasRect.height
           
-          // 转换坐标和尺寸
+          if (!viewWidth || !viewHeight || viewWidth <= 0 || viewHeight <= 0) {
+            console.error('❌ Canvas区域尺寸无效:', { viewWidth, viewHeight })
+            reject(new Error('Canvas区域尺寸无效'))
+            return
+          }
+          
+          // Canvas实际尺寸
+          const canvasWidth = this.canvasSize.width
+          const canvasHeight = this.canvasSize.height
+          
+          // 计算从界面坐标到Canvas坐标的缩放比例
+          const scaleRatio = Math.min(canvasWidth / viewWidth, canvasHeight / viewHeight)
+          
+          // 前景图在界面中的基础尺寸（25%）
+          const baseSize = Math.min(viewWidth, viewHeight) * 0.25
+          
+          // 应用用户的缩放
+          const finalSize = baseSize * this.transform.scale * scaleRatio
+          
+          // 计算在Canvas中的位置
+          // 界面中心点 + 用户偏移，然后映射到Canvas坐标
+          const canvasCenterX = canvasWidth / 2
+          const canvasCenterY = canvasHeight / 2
+          const offsetX = this.transform.x * scaleRatio
+          const offsetY = this.transform.y * scaleRatio
+          
+          const finalX = canvasCenterX + offsetX - finalSize / 2
+          const finalY = canvasCenterY + offsetY - finalSize / 2
+          
           const config = {
-            x: this.transform.x * scaleX + this.canvasSize.width / 2 - 100,
-            y: this.transform.y * scaleY + this.canvasSize.height / 2 - 100,
-            width: 200 * this.transform.scale * scaleX,
-            height: 200 * this.transform.scale * scaleY,
+            x: finalX,
+            y: finalY,
+            width: finalSize,
+            height: finalSize,
             rotation: this.transform.rotation,
             opacity: this.transform.opacity
           }
+          
+          // 验证配置的合理性
+          if (config.width <= 0 || config.height <= 0) {
+            console.error('❌ 计算出的前景图尺寸无效:', config)
+            reject(new Error('前景图尺寸计算结果无效'))
+            return
+          }
+          
+          console.log('前景图配置计算:', {
+            界面尺寸: { viewWidth, viewHeight },
+            Canvas尺寸: { canvasWidth, canvasHeight },
+            缩放比例: scaleRatio,
+            用户变换: this.transform,
+            基础尺寸: baseSize,
+            最终配置: config
+          })
           
           resolve(config)
         }).exec()
@@ -741,7 +882,9 @@ export default {
 
 .background-upload {
   width: 100%;
-  height: 100%;
+  aspect-ratio: 16/9;  /* 保持16:9比例 */
+  max-height: 60vh;    /* 限制最大高度 */
+  margin: 0 auto;      /* 居中显示 */
   display: flex;
   align-items: center;
   justify-content: center;
@@ -768,24 +911,28 @@ export default {
 .edit-canvas {
   position: relative;
   width: 100%;
-  height: 100%;
+  aspect-ratio: 16/9;  /* 保持16:9比例 */
+  max-height: 60vh;    /* 限制最大高度，避免在小屏幕上过高 */
+  margin: 0 auto;      /* 居中显示 */
   overflow: hidden;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
 }
 
 .background-layer {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;  /* 确保长边完全展示 */
 }
 
 .foreground-layer {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 200rpx;
-  height: 200rpx;
-  margin-left: -100rpx;
-  margin-top: -100rpx;
+  width: 25%;      /* 动态尺寸，相对于容器 */
+  aspect-ratio: 1; /* 保持正方形 */
+  margin-left: -12.5%;  /* 宽度的一半 */
+  margin-top: -12.5%;   /* 高度的一半 */
   transform-origin: center;
   cursor: grab;
 }
@@ -843,7 +990,7 @@ export default {
   background-color: var(--bg-primary);
   border-top: 1rpx solid var(--border-color);
   padding: 32rpx;
-  max-height: 400rpx;
+  max-height: 600rpx;
   overflow-y: auto;
 }
 

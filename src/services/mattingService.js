@@ -33,7 +33,7 @@ export class MattingService {
     const url = API_CONFIG.KOUKOUTU.ASYNC_BASE_URL + API_CONFIG.KOUKOUTU.ENDPOINTS.ASYNC_CREATE
 
     const defaultOptions = {
-      output_format: 'webp',
+      output_format: 'png',
       crop: '0',
       border: '0',
       response: 'url'

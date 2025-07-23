@@ -215,7 +215,7 @@ export default {
         
         // 调用异步API创建任务
         const taskId = await MattingService.removeBackgroundAsync(this.originalImagePath, {
-          output_format: 'webp',
+          output_format: 'png',
           response: 'url'
         })
         
